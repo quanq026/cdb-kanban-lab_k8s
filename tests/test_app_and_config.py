@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import importlib.util
+import os
+import socket
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_backend_module(env_overrides: dict[str, str]):
+    app_path = ROOT / "backend" / "app.py"
+    if not app_path.exists():
+        raise AssertionError(f"Missing backend app at {app_path}")
+
+    spec = importlib.util.spec_from_file_location("cdb_backend_app", app_path)
+    assert spec is not None and spec.loader is not None
+
+    with mock.patch.dict(os.environ, env_overrides, clear=False):
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["cdb_backend_app"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+
+class TestLayoutAndFrontend(unittest.TestCase):
+    def test_required_files_exist(self):
+        required = [
+            "db/schema.sql",
+            "backend/Dockerfile",
+            "backend/requirements.txt",
+            "backend/app.py",
+            "frontend/Dockerfile",
+            "frontend/nginx.conf",
+            "frontend/99-pod-info.sh",
+            "frontend/static/index.html",
+            "frontend/static/login.html",
+            "frontend/static/register.html",
+            "frontend/static/app.js",
+            "frontend/static/app.css",
+        ]
+        missing = [rel for rel in required if not (ROOT / rel).is_file()]
+        self.assertEqual(missing, [], f"Missing files: {missing}")
+
+    def test_schema_has_users_and_tasks(self):
+        sql = (ROOT / "db" / "schema.sql").read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE users", sql)
+        self.assertIn("CREATE TABLE tasks", sql)
+
+    def test_nginx_proxies_api_and_serves_static_routes(self):
+        conf = (ROOT / "frontend" / "nginx.conf").read_text(encoding="utf-8")
+        self.assertIn("location /api/", conf)
+        self.assertIn("proxy_pass http://backend-svc:8000", conf)
+        self.assertIn("location = /healthz", conf)
+        self.assertIn("try_files", conf)
+
+    def test_frontend_dockerfile_uses_version_build_arg(self):
+        df = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("ARG APP_VERSION=v1", df)
+        self.assertIn("ENV APP_VERSION=${APP_VERSION}", df)
+        self.assertIn("99-pod-info.sh", df)
+        self.assertNotIn("latest", df.lower().split("\n")[0])
+
+    def test_frontend_pod_info_script_emits_version_and_pod(self):
+        sh = (ROOT / "frontend" / "99-pod-info.sh").read_text(encoding="utf-8")
+        self.assertIn("frontend-info.json", sh)
+        self.assertIn("APP_VERSION", sh)
+        self.assertIn("HOSTNAME", sh)
+
+    def test_frontend_html_and_js_have_version_and_pod_hooks(self):
+        index_html = (ROOT / "frontend" / "static" / "index.html").read_text(encoding="utf-8")
+        login_html = (ROOT / "frontend" / "static" / "login.html").read_text(encoding="utf-8")
+        register_html = (ROOT / "frontend" / "static" / "register.html").read_text(encoding="utf-8")
+        js = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="board"', index_html)
+        self.assertIn('id="login-form"', login_html)
+        self.assertIn('id="register-form"', register_html)
+
+        for html in (index_html, login_html, register_html):
+            self.assertIn("cluster-meta", html)
+
+        self.assertIn("/api/health", js)
+        self.assertIn("/frontend-info.json", js)
+
+
+class TestBackendApp(unittest.TestCase):
+    def test_cookie_secure_false_for_http_nodeport(self):
+        mod = load_backend_module(
+            {
+                "APP_SECRET_KEY": "unit-test-secret",
+                "DB_HOST": "127.0.0.1",
+                "DB_NAME": "studydb",
+                "DB_USER": "app_user",
+                "DB_PASSWORD": "secret",
+                "DB_SSLMODE": "disable",
+                "COOKIE_SECURE": "false",
+                "APP_VERSION": "v1",
+            }
+        )
+        self.addCleanup(lambda: mod.pool.close(timeout=0.5))
+        self.assertFalse(mod.app.config["SESSION_COOKIE_SECURE"])
+
+    def test_cookie_secure_true_by_flag_and_livez_health(self):
+        mod = load_backend_module(
+            {
+                "APP_SECRET_KEY": "unit-test-secret",
+                "DB_HOST": "127.0.0.1",
+                "DB_NAME": "studydb",
+                "DB_USER": "app_user",
+                "DB_PASSWORD": "secret",
+                "DB_SSLMODE": "disable",
+                "COOKIE_SECURE": "true",
+                "APP_VERSION": "v2",
+            }
+        )
+        self.addCleanup(lambda: mod.pool.close(timeout=0.5))
+        self.assertTrue(mod.app.config["SESSION_COOKIE_SECURE"])
+
+        client = mod.app.test_client()
+        live = client.get("/livez")
+        self.assertEqual(live.status_code, 200)
+        live_data = live.get_json()
+        self.assertEqual(live_data["status"], "alive")
+        self.assertEqual(live_data["version"], "v2")
+        self.assertEqual(live_data["pod"], socket.gethostname())
+
+        with mock.patch.object(
+            mod,
+            "q_all",
+            return_value=[{"db_user": "app_user", "database": "studydb", "backend_addr": "10.0.0.5"}],
+        ):
+            ok_resp = client.get("/api/health")
+        self.assertEqual(ok_resp.status_code, 200)
+        ok_data = ok_resp.get_json()
+        self.assertTrue(ok_data["ok"])
+        self.assertEqual(ok_data["status"], "ok")
+        self.assertEqual(ok_data["db_user"], "app_user")
+        self.assertEqual(ok_data["version"], "v2")
+        self.assertEqual(ok_data["pod"], socket.gethostname())
+
+        with mock.patch.object(mod, "q_all", side_effect=mod.OperationalError("down")):
+            err_resp = client.get("/api/health")
+        self.assertEqual(err_resp.status_code, 503)
+        err_data = err_resp.get_json()
+        self.assertFalse(err_data["ok"])
+        self.assertEqual(err_data["code"], "db_unavailable")
+        self.assertEqual(err_data["version"], "v2")
+        self.assertEqual(err_data["pod"], socket.gethostname())
+
+
+if __name__ == "__main__":
+    unittest.main()

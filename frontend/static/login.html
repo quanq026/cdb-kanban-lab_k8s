@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Đăng nhập · CDB Kanban</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="auth-body">
+<main class="auth">
+  <form id="login-form" class="auth-card" novalidate>
+    <div class="brand auth-brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">CDB Kanban</span>
+      <span id="cluster-meta" class="cluster-meta" data-version="__APP_VERSION__">__APP_VERSION__</span>
+    </div>
+    <h1 class="auth-title">Đăng nhập</h1>
+
+    <label class="field block">
+      <span class="field-label">Email</span>
+      <input id="login-email" type="email" inputmode="email" autocomplete="username" required placeholder="ten@example.com">
+    </label>
+    <label class="field block">
+      <span class="field-label">Mật khẩu</span>
+      <input id="login-password" type="password" autocomplete="current-password" required placeholder="••••••••">
+    </label>
+
+    <p id="login-error" class="auth-error" role="alert" aria-live="assertive" hidden></p>
+
+    <button id="login-submit" class="btn primary block-btn" type="submit">Đăng nhập</button>
+    <p class="auth-alt">Chưa có tài khoản? <a href="/register">Đăng ký</a></p>
+  </form>
+  <footer id="cluster-footer" class="cluster-footer" aria-live="polite">App __APP_VERSION__</footer>
+</main>
+<script src="/app.js" defer></script>
+</body>
+</html>

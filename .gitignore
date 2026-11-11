@@ -1,0 +1,11 @@
+.env*
+!.env.example
+*.dump
+*.pem
+*.pyc
+**/__pycache__/
+.venv/
+.pytest_cache/
+node_modules/
+.DS_Store
+Thumbs.db

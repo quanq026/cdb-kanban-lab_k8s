@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>CDB Kanban</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<a class="skip" href="#board">Bỏ qua tới bảng công việc</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">CDB Kanban</span>
+    <span id="cluster-meta" class="cluster-meta" data-version="__APP_VERSION__">__APP_VERSION__</span>
+  </div>
+
+  <label class="field search-field">
+    <input id="search" type="search" placeholder="Lọc theo tiêu đề…" aria-label="Tìm việc theo tiêu đề" autocomplete="off">
+    <kbd class="hint" aria-hidden="true">/</kbd>
+  </label>
+
+  <div class="topbar-actions">
+    <button id="theme" class="btn icon" type="button" aria-label="Đổi giao diện sáng/tối" title="Giao diện: tự động">◐</button>
+    <div class="account-menu">
+      <button id="account-toggle" class="avatar-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu" aria-label="Tài khoản" title="Tài khoản">
+        <span id="avatar" class="avatar" aria-hidden="true">?</span>
+      </button>
+      <div id="account-menu" class="menu" role="menu" hidden>
+        <p id="account-email" class="menu-email">…</p>
+        <button id="logout" class="menu-item" type="button" role="menuitem">Đăng xuất</button>
+      </div>
+    </div>
+    <button id="add-open" class="btn primary" type="button" aria-keyshortcuts="N">Thêm việc</button>
+  </div>
+</header>
+
+<div id="slow" class="slow" role="status" aria-live="polite" hidden>
+  <span class="spinner" aria-hidden="true"></span>
+  Đang kết nối cơ sở dữ liệu…
+</div>
+
+<main id="board" class="board" aria-label="Bảng công việc">
+  <section class="col" data-status="todo" aria-labelledby="h-todo">
+    <h2 id="h-todo"><span class="dot" aria-hidden="true"></span>Todo <span class="count" id="count-todo">0</span></h2>
+    <div class="list" id="list-todo"></div>
+  </section>
+  <section class="col" data-status="doing" aria-labelledby="h-doing">
+    <h2 id="h-doing"><span class="dot" aria-hidden="true"></span>Doing <span class="count" id="count-doing">0</span></h2>
+    <div class="list" id="list-doing"></div>
+  </section>
+  <section class="col" data-status="done" aria-labelledby="h-done">
+    <h2 id="h-done"><span class="dot" aria-hidden="true"></span>Done <span class="count" id="count-done">0</span></h2>
+    <div class="list" id="list-done"></div>
+  </section>
+</main>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+
+<dialog id="composer" class="dialog" aria-labelledby="composer-title">
+  <form id="composer-form">
+    <h2 id="composer-title">Thêm việc mới</h2>
+    <label class="field block">
+      <span class="field-label">Tiêu đề</span>
+      <input id="new-title" type="text" maxlength="200" placeholder="Việc cần làm…" autocomplete="off">
+    </label>
+    <div class="dialog-actions">
+      <button id="composer-cancel" class="btn" type="button">Huỷ</button>
+      <button id="add-submit" class="btn primary" type="submit">Thêm</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm" class="dialog" aria-labelledby="confirm-title">
+  <h2 id="confirm-title">Xoá việc này?</h2>
+  <p class="dialog-text" id="confirm-text"></p>
+  <div class="dialog-actions">
+    <button id="confirm-no" class="btn" type="button">Giữ lại</button>
+    <button id="confirm-yes" class="btn danger" type="button">Xoá</button>
+  </div>
+</dialog>
+
+<footer id="cluster-footer" class="cluster-footer" aria-live="polite">App __APP_VERSION__</footer>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
