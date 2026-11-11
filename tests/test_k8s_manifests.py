@@ -72,6 +72,16 @@ class TestK8sManifests(unittest.TestCase):
         self.assertIn("readinessProbe:", fe)
         self.assertIn("livenessProbe:", fe)
 
+    def test_fast_demo_failover_timings(self):
+        for name in ("01-postgres.yaml", "02-backend.yaml", "03-frontend.yaml"):
+            text = (K8S_DIR / name).read_text(encoding="utf-8")
+            self.assertIn("tolerationSeconds: 10", text, f"{name} should use 10s failover toleration")
+            self.assertIn("terminationGracePeriodSeconds:", text, f"{name} should set short termination grace")
+        for name in ("02-backend.yaml", "03-frontend.yaml"):
+            text = (K8S_DIR / name).read_text(encoding="utf-8")
+            self.assertIn("pod-template-hash", text, f"{name} should scope spread to active ReplicaSet")
+            self.assertIn("preStop:", text, f"{name} should drain endpoints with preStop hook")
+
 
 if __name__ == "__main__":
     unittest.main()

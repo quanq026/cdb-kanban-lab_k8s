@@ -81,9 +81,9 @@ Sử dụng `ARG APP_VERSION` ngay trong hai `Dockerfile` để đóng gói và 
 Toàn bộ tài nguyên được khai báo dưới dạng mã trong thư mục `k8s/` và áp dụng qua `kubectl apply -f k8s/`:
 
 1. `00-namespace.yaml`: Tạo Namespace riêng `cdb-kanban`.
-2. `01-postgres.yaml`: Khai báo `Secret` `cdb-secrets`, `ConfigMap` `postgres-initdb` chứa `schema.sql`, `Deployment` `postgres` (`postgres:17-alpine`, chiến lược `Recreate`, readiness/liveness dùng `pg_isready`) và `ClusterIP Service` `postgres-svc:5432`.
-3. `02-backend.yaml`: Khai báo `ConfigMap` `backend-config`, `Deployment` `cdb-backend` (`replicas: 2`, `RollingUpdate` `maxSurge: 1, maxUnavailable: 0`, `topologySpreadConstraints` theo `kubernetes.io/hostname`, `tolerations` 30s cho `not-ready`/`unreachable`) và `ClusterIP Service` `backend-svc:8000`.
-4. `03-frontend.yaml`: Khai báo `Deployment` `cdb-frontend` (`replicas: 2`, `topologySpreadConstraints` + `RollingUpdate` + `tolerations` tương tự Backend) và `NodePort Service` `frontend-svc` ánh xạ cổng `80 -> 30080`.
+2. `01-postgres.yaml`: Khai báo `Secret` `cdb-secrets`, `ConfigMap` `postgres-initdb` chứa `schema.sql`, `Deployment` `postgres` (`postgres:17-alpine`, chiến lược `Recreate`, `tolerations` 10s, `terminationGracePeriodSeconds: 5`, readiness/liveness dùng `pg_isready`) và `ClusterIP Service` `postgres-svc:5432`.
+3. `02-backend.yaml`: Khai báo `ConfigMap` `backend-config`, `Deployment` `cdb-backend` (`replicas: 2`, `RollingUpdate` `maxSurge: 1, maxUnavailable: 0`, `topologySpreadConstraints` theo `kubernetes.io/hostname` kèm `matchLabelKeys: [pod-template-hash]`, `tolerations` 10s cho `not-ready`/`unreachable`, `preStop: sleep 2` cùng `terminationGracePeriodSeconds: 8`) và `ClusterIP Service` `backend-svc:8000`.
+4. `03-frontend.yaml`: Khai báo `Deployment` `cdb-frontend` (`replicas: 2`, `topologySpreadConstraints` + `RollingUpdate` + `tolerations` 10s + `preStop: sleep 2` tương tự Backend) và `NodePort Service` `frontend-svc` ánh xạ cổng `80 -> 30080`.
 
 ---
 
@@ -118,8 +118,8 @@ Toàn bộ tài nguyên được khai báo dưới dạng mã trong thư mục `
    - *Khắc phục:* Đưa cấu hình này ra biến môi trường `COOKIE_SECURE`, đặt `"false"` trong `ConfigMap` cho bài toán NodePort HTTP trong khi vẫn giữ mặc định an toàn `"true"` khi chạy sau TLS.
 
 5. **Phân bổ Pod mặc định & Thời gian phục hồi khi mất Node:**
-   - *Vấn đề:* Scheduler mặc định có thể đặt cả 2 replica lên cùng một worker, và thời gian chờ mặc định trước khi Pod trên node chết bị loại bỏ lên tới 300 giây (`tolerationSeconds: 300`).
-   - *Khắc phục:* Khai báo `topologySpreadConstraints` (`whenUnsatisfiable: ScheduleAnyway`) để rải đều Pod khi đủ node nhưng vẫn cho phép dồn Pod khi một node tắt, kết hợp giảm `tolerationSeconds: 30` để hệ thống tự phục hồi nhanh trong demo.
+   - *Vấn đề:* Scheduler mặc định có thể đặt cả 2 replica lên cùng một worker (hoặc dồn Pod khi RollingUpdate), đồng thời thời gian phát hiện node lỗi mặc định (`50s` trên `kube-controller-manager`) cộng `tolerationSeconds: 300` khiến Pod mất gần 6 phút mới tự chuyển node.
+   - *Khắc phục:* Khai báo `topologySpreadConstraints` (`whenUnsatisfiable: ScheduleAnyway`, `matchLabelKeys: [pod-template-hash]`) để luôn rải đều Pod khi đủ 2 worker nhưng vẫn cho phép dồn Pod khi mất 1 worker; rút `--node-monitor-period=2s`, `--node-monitor-grace-period=20s` trên control plane kèm `tolerationSeconds: 10`, `preStop: sleep 2`, `terminationGracePeriodSeconds: 5–8` và kéo nhanh `readinessProbe` để hệ thống tự phục hồi an toàn trong ~28–30 giây mà không phát sinh lỗi `502` khi chuyển Endpoint.
 
 6. **Cấu hình SSH bằng mật khẩu trên Ubuntu 24.04 Cloud Image:**
    - *Vấn đề:* File cấu hình ưu tiên thấp hơn không thể ghi đè `PasswordAuthentication no` trong `50-cloud-init.conf` và `60-cloudimg-settings.conf` vì OpenSSH áp dụng nguyên tắc *first-match-wins*.

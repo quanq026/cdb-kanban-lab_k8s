@@ -32,6 +32,7 @@ spec:
       labels:
         app: cdb-backend
     spec:
+      terminationGracePeriodSeconds: 8
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -39,15 +40,17 @@ spec:
           labelSelector:
             matchLabels:
               app: cdb-backend
+          matchLabelKeys:
+            - pod-template-hash
       tolerations:
         - key: node.kubernetes.io/not-ready
           operator: Exists
           effect: NoExecute
-          tolerationSeconds: 30
+          tolerationSeconds: 10
         - key: node.kubernetes.io/unreachable
           operator: Exists
           effect: NoExecute
-          tolerationSeconds: 30
+          tolerationSeconds: 10
       containers:
         - name: backend
           image: quanq026/cdb-kanban-backend:v1
@@ -55,6 +58,10 @@ spec:
           ports:
             - containerPort: 8000
               name: http
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "2"]
           envFrom:
             - configMapRef:
                 name: backend-config
@@ -64,9 +71,9 @@ spec:
             httpGet:
               path: /api/health
               port: 8000
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 3
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            timeoutSeconds: 2
           livenessProbe:
             httpGet:
               path: /livez

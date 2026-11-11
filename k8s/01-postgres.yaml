@@ -73,6 +73,16 @@ spec:
       labels:
         app: postgres
     spec:
+      terminationGracePeriodSeconds: 5
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 10
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 10
       containers:
         - name: postgres
           image: postgres:17-alpine
@@ -95,13 +105,13 @@ spec:
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "app_user", "-d", "studydb"]
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 3
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            timeoutSeconds: 2
           livenessProbe:
             exec:
               command: ["pg_isready", "-U", "app_user", "-d", "studydb"]
-            initialDelaySeconds: 20
+            initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 3
           resources:
