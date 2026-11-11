@@ -33,11 +33,11 @@ Mỗi máy ảo sử dụng SKU `Standard_B2als_v2` (2 vCPU, 3.8 GiB RAM, kiến
 
 ---
 
-## 2. Thiết kế lại phần Web & Đóng gói Docker
+## 2. Kiến trúc Web 3 tầng & Đóng gói Docker
 
-### 2.1. Tách ứng dụng Web từ nguyên khối sang 3 tầng
+### 2.1. Phân tách độc lập 3 tầng ứng dụng
 
-Từ ứng dụng Kanban nguyên khối ban đầu, mã nguồn được tái cấu trúc vào thư mục độc lập nhằm đáp ứng chuẩn triển khai microservices trên Kubernetes:
+Ứng dụng CDB Kanban được xây dựng độc lập theo mô hình ba tầng tách biệt nhằm tối ưu đóng gói container, cấu hình và mở rộng riêng từng thành phần trên Kubernetes:
 
 1. **Tầng Frontend (`frontend/`):**
    - Sử dụng `nginx:1.27-alpine` phục vụ các trang tĩnh (`/`, `/login`, `/register`, `/app.css`, `/app.js`).
@@ -87,11 +87,11 @@ Toàn bộ tài nguyên được khai báo dưới dạng mã trong thư mục `
 
 ---
 
-## 4. Kết quả kiểm thử & Diễn tập vận hành thực tế
+## 4. Kết quả triển khai & Kiểm thử vận hành thực tế
 
 | Bài kiểm thử | Lệnh / Thao tác thực hiện | Kết quả quan sát thực tế |
 | --- | --- | --- |
-| **Triển khai ban đầu (`v1`)** | `kubectl apply -f ./k8s/` & Smoke test HTTP qua `20.205.36.32:30080` và `20.24.211.55:30080` | 2 Pod Backend (`worker1`, `worker2`), 2 Pod Frontend (`worker1`, `worker2`), 1 Pod Postgres (`worker2`) đều `1/1 Running`. Đăng ký user, tạo và cập nhật task thành công. |
+| **Triển khai phiên bản `v1`** | `kubectl apply -f ./k8s/` & Smoke test HTTP qua `20.205.36.32:30080` và `20.24.211.55:30080` | 2 Pod Backend (`worker1`, `worker2`), 2 Pod Frontend (`worker1`, `worker2`), 1 Pod Postgres (`worker2`) đều `1/1 Running`. Đăng ký user, tạo và cập nhật task thành công. |
 | **Scale lên 4 replicas** | `kubectl scale deployment cdb-frontend -n cdb-kanban --replicas=4` | 4/4 Pod `Running`: đúng 2 Pod trên `worker1` và 2 Pod trên `worker2`; sau đó thu gọn sạch về `2`. |
 | **Rolling Update `v1 -> v2`** | `kubectl set image` lên `:v2` cho Backend và Frontend | Pod `:v2` đạt `Ready` trước khi chấm dứt Pod `:v1` (`maxUnavailable: 0`); UI & `/api/health` trả `version: "v2"`, task Kanban trong PostgreSQL được giữ nguyên. |
 | **Rollback `v2 -> v1`** | `kubectl rollout undo` cho Backend và Frontend | Lịch sử lên revision 3, `/api/health` xác nhận trả về lại `"version": "v1"` không mất dữ liệu. |
@@ -113,8 +113,8 @@ Toàn bộ tài nguyên được khai báo dưới dạng mã trong thư mục `
    - *Vấn đề:* Hạ tầng mạng ảo đám mây Azure không định tuyến gói tin đóng gói IP-in-IP giữa các máy ảo.
    - *Khắc phục:* Sử dụng Flannel ở chế độ **VXLAN** (`10.244.0.0/16`) đóng gói qua UDP nội bộ VNet, giúp giao tiếp `frontend` ↔ `backend` ↔ `postgres` xuyên node hoạt động ổn định.
 
-4. **Lỗi mất phiên đăng nhập khi chuyển từ HTTPS sang HTTP NodePort:**
-   - *Vấn đề:* Bản gốc gắn cứng `SESSION_COOKIE_SECURE=True`, khiến trình duyệt từ chối lưu cookie `cdb_session` khi truy cập qua `http://<Node-IP>:30080`.
+4. **Lỗi mất phiên đăng nhập khi chạy qua HTTP NodePort:**
+   - *Vấn đề:* Thiết lập bảo mật cookie mặc định (`SESSION_COOKIE_SECURE=True`) chỉ cho phép gửi cookie qua HTTPS, khiến trình duyệt từ chối lưu cookie `cdb_session` khi truy cập qua `http://<Node-IP>:30080`.
    - *Khắc phục:* Đưa cấu hình này ra biến môi trường `COOKIE_SECURE`, đặt `"false"` trong `ConfigMap` cho bài toán NodePort HTTP trong khi vẫn giữ mặc định an toàn `"true"` khi chạy sau TLS.
 
 5. **Phân bổ Pod mặc định & Thời gian phục hồi khi mất Node:**
