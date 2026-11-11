@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: cdb-kanban
+data:
+  DB_HOST: "postgres-svc"
+  DB_PORT: "5432"
+  DB_NAME: "studydb"
+  DB_SSLMODE: "disable"
+  COOKIE_SECURE: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdb-backend
+  namespace: cdb-kanban
+  labels:
+    app: cdb-backend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: cdb-backend
+  template:
+    metadata:
+      labels:
+        app: cdb-backend
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: cdb-backend
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+      containers:
+        - name: backend
+          image: quanq026/cdb-kanban-backend:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: cdb-secrets
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: cdb-kanban
+  labels:
+    app: cdb-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: cdb-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

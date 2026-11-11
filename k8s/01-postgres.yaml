@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cdb-secrets
+  namespace: cdb-kanban
+type: Opaque
+stringData:
+  POSTGRES_DB: "studydb"
+  POSTGRES_USER: "app_user"
+  POSTGRES_PASSWORD: "kanban_internal_secret_2026"
+  DB_USER: "app_user"
+  DB_PASSWORD: "kanban_internal_secret_2026"
+  APP_SECRET_KEY: "cdb-kanban-k8s-session-secret-2026"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: cdb-kanban
+data:
+  01-schema.sql: |
+    CREATE TABLE users (
+        id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        email         text NOT NULL UNIQUE,
+        password_hash text
+    );
+
+    CREATE TABLE tasks (
+        id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        user_id    bigint NOT NULL REFERENCES users(id),
+        title      text NOT NULL CHECK (length(btrim(title)) > 0),
+        status     text NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'done')),
+        position   integer NOT NULL DEFAULT 0,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX idx_tasks_user_status_position ON tasks (user_id, status, position);
+
+    CREATE FUNCTION tasks_touch_updated_at() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+        NEW.updated_at := now();
+        RETURN NEW;
+    END;
+    $$;
+
+    CREATE TRIGGER trg_tasks_updated_at
+        BEFORE UPDATE ON tasks
+        FOR EACH ROW
+        EXECUTE FUNCTION tasks_touch_updated_at();
+
+    COMMENT ON COLUMN tasks.position   IS 'Thu tu thu cong trong (user_id, status); nho hon = truoc';
+    COMMENT ON COLUMN tasks.created_at IS 'Thoi diem tao (UTC)';
+    COMMENT ON COLUMN tasks.updated_at IS 'Thoi diem cap nhat cuoi (trigger)';
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: cdb-kanban
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            - secretRef:
+                name: cdb-secrets
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "app_user", "-d", "studydb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "app_user", "-d", "studydb"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: pgdata
+          emptyDir: {}
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-svc
+  namespace: cdb-kanban
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
