@@ -8,10 +8,10 @@ Triển khai ứng dụng quản lý công việc **CDB Kanban** theo kiến tr�
 
 1. [Kiến trúc hệ thống](#1-kiến-trúc-hệ-thống)
 2. [Cấu trúc mã nguồn](#2-cấu-trúc-mã-nguồn)
-3. [Yêu cầu tiên quyết](#3-yêu-cầu-tiên-quyết)
+3. [Hạ tầng cụm & Truy cập SSH](#3-hạ-tầng-cụm--truy-cập-ssh)
 4. [Hướng dẫn triển khai](#4-hướng-dẫn-triển-khai)
 5. [Cấu hình môi trường & Bảo mật](#5-cấu-hình-môi-trường--bảo-mật)
-6. [Vận hành Kubernetes (Scaling, Update, Rollback)](#6-vận-hành-kubernetes-scaling-update-rollback)
+6. [Kiểm thử vận hành thực tế](#6-kiểm-thử-vận-hành-thực-tế)
 7. [Kiểm thử tự động](#7-kiểm-thử-tự-động)
 8. [Xử lý sự cố thường gặp](#8-xử-lý-sự-cố-thường-gặp)
 
@@ -46,8 +46,8 @@ Service: postgres-svc (ClusterIP :5432)
 ### Đặc điểm thiết kế chính
 
 - **Tách biệt Frontend / Backend:** Nginx phục vụ toàn bộ tài nguyên tĩnh và định tuyến `/api/` nội bộ qua CoreDNS (`http://backend-svc:8000`) giúp trình duyệt giao tiếp cùng nguồn (same-origin), không cần cấu hình CORS.
-- **High Availability (HA) cho lớp ứng dụng:** Cả `cdb-frontend` và `cdb-backend` đều chạy `replicas: 2`, cấu hình `topologySpreadConstraints` (`topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`) để phân bố đều trên hai worker node và vẫn có thể dồn về node sống khi một worker gặp sự cố.
-- **Zero-downtime Rollout:** Chiến lược `RollingUpdate` với `maxSurge: 1, maxUnavailable: 0` kết hợp `readinessProbe` và `livenessProbe` tách biệt (`/api/health` kiểm tra DB cho readiness, `/livez` kiểm tra tiến trình cho liveness).
+- **High Availability (HA) cho lớp ứng dụng:** Cả `cdb-frontend` và `cdb-backend` đều chạy `replicas: 2`, cấu hình `topologySpreadConstraints` (`topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`, `matchLabelKeys: [pod-template-hash]`) để luôn phân bố đều trên hai worker node kể cả trong lúc rollout, đồng thời cho phép dồn Pod về node sống chỉ với `tolerationSeconds: 10` khi một worker gặp sự cố.
+- **Zero-downtime Rollout:** Chiến lược `RollingUpdate` với `maxSurge: 1, maxUnavailable: 0`, `preStop: ["sleep", "2"]` cùng `readinessProbe` và `livenessProbe` tách biệt (`/api/health` kiểm tra DB cho readiness, `/livez` kiểm tra tiến trình cho liveness).
 - **Quản lý phiên bản image chặt chẽ:** Mọi `Dockerfile` và Kubernetes manifest đều gắn tag phiên bản tường minh (`:v1`, `:v2`, `17-alpine`), không sử dụng `:latest`.
 
 ---
@@ -73,20 +73,42 @@ cdb-kanban-lab_k8s/
 │   ├── 02-backend.yaml        # ConfigMap backend-config, Deployment cdb-backend, Service backend-svc
 │   └── 03-frontend.yaml       # Deployment cdb-frontend, NodePort Service frontend-svc (:30080)
 ├── docs/
-│   └── REPORT.md              # Báo cáo chi tiết quá trình triển khai Azure, Web, Docker & K8s
+│   ├── REPORT.md              # Báo cáo chi tiết quá trình triển khai Azure, Web, Docker & K8s
+│   └── Bao-cao-CKA-2026-CDB-Kanban.pdf
 ├── tests/
 │   ├── test_app_and_config.py # Kiểm thử cấu hình backend API, nginx và static hooks
-│   └── test_k8s_manifests.py  # Kiểm thử ràng buộc YAML K8s (không dùng :latest, HA, probes)
+│   ├── test_demo_menu.py      # Kiểm thử công cụ CLI điều phối lệnh
+│   └── test_k8s_manifests.py  # Kiểm thử ràng buộc YAML K8s (không dùng :latest, HA, probes, tolerations)
+├── demo_menu.py               # Menu CLI Python kiểm tra cụm và thực thi thao tác vận hành
 └── ruff.toml                  # Cấu hình linter Python
 ```
 
 ---
 
-## 3. Yêu cầu tiên quyết
+## 3. Hạ tầng cụm & Truy cập SSH
 
-- **Cụm máy ảo (3 node):** `cp` (control-plane), `worker1`, `worker2` chạy Ubuntu 24.04 LTS, cấu hình tối thiểu 2 vCPU / 4 GiB RAM mỗi node, giao tiếp nội bộ qua mạng VNet (`10.10.1.0/24`).
-- **Tường lửa / NSG:** Mở inbound TCP `22` (SSH), `30000-32767` (NodePort), tùy chọn `80`/`443`; cho phép lưu lượng nội bộ trong VNet (API server `6443`, VXLAN `8472/UDP`, `kubelet` `10250`).
-- **Công cụ trên node:** `containerd` (đã bật plugin `cri` và `SystemdCgroup = true`), `kubelet`, `kubeadm`, `kubectl`, Docker Engine trên máy build, và tài khoản Docker Hub (`quanq026`).
+### Thông tin 3 Node Azure (`rg-k8s` — Region `eastasia`)
+
+| Node | Vai trò | Private IP | Public IP | Truy cập ứng dụng (NodePort) |
+| --- | --- | --- | --- | --- |
+| `cp` | Control Plane (`apiserver`, `etcd`, `scheduler`, `controller-manager`) | `10.10.1.10` | `52.184.98.155` | — |
+| `worker1` | Worker Node 1 | `10.10.1.11` | `20.205.36.32` | `http://20.205.36.32:30080` |
+| `worker2` | Worker Node 2 | `10.10.1.12` | `20.24.211.55` | `http://20.24.211.55:30080` |
+
+### Lệnh SSH vào 3 Node
+
+```bash
+# Đăng nhập bằng SSH key (hoặc bỏ cờ '-i ~/.ssh/id_rsa_azure' nếu dùng mật khẩu)
+ssh -i ~/.ssh/id_rsa_azure azureuser@52.184.98.155   # cp (Control Plane)
+ssh -i ~/.ssh/id_rsa_azure azureuser@20.205.36.32    # worker1
+ssh -i ~/.ssh/id_rsa_azure azureuser@20.24.211.55    # worker2
+```
+
+### Yêu cầu môi trường & Tường lửa
+
+- **Cấu hình VM:** Ubuntu 24.04.5 LTS, tối thiểu 2 vCPU / 3.8 GiB RAM mỗi node (`Standard_B2als_v2`), giao tiếp nội bộ qua subnet `10.10.1.0/24`.
+- **Tường lửa / NSG (`nsg-k8s`):** Mở inbound TCP `22` (SSH), `30000-32767` (NodePort), tùy chọn `80`/`443`; cho phép lưu lượng nội bộ trong VNet (`AllowVnetInBound` cho API server `6443/TCP`, Flannel VXLAN `8472/UDP`, `kubelet` `10250/TCP`).
+- **Công cụ trên node:** `containerd` (đã bật plugin `cri` và `SystemdCgroup = true`), `kubelet`, `kubeadm`, `kubectl` (`v1.35.10`), Docker Engine trên máy build và tài khoản Docker Hub (`quanq026`).
 
 ---
 
@@ -198,17 +220,46 @@ Truy cập ứng dụng trên trình duyệt tại:
 
 ---
 
-## 6. Vận hành Kubernetes (Scaling, Update, Rollback)
+## 6. Kiểm thử vận hành thực tế
 
-### Scale số lượng bản sao (Replicas)
+Các bước kiểm tra dưới đây thực hiện trực tiếp trên `cp` (`ssh -i ~/.ssh/id_rsa_azure azureuser@52.184.98.155`) hoặc qua công cụ hỗ trợ `demo_menu.py` từ máy trạm.
+
+### 6.1. Xác minh Cluster, phân bố Pod & liên kết Service nội bộ
+
+```bash
+# 1. Kiểm tra trạng thái 3 Node và CNI Flannel
+kubectl get nodes -o wide
+kubectl get pods -n kube-flannel
+
+# 2. Kiểm tra toàn bộ Deployment, Pod, Service và EndpointSlice
+kubectl get deployments,pods,svc,endpointslices -n cdb-kanban -o wide
+
+# 3. Kiểm tra luồng gọi nội bộ Frontend -> Backend Service -> PostgreSQL Service
+kubectl exec -n cdb-kanban deployment/cdb-frontend -- wget -qO- http://backend-svc:8000/api/health
+kubectl exec -n cdb-kanban deployment/postgres -- pg_isready -U app_user -d studydb
+
+# 4. Kiểm tra truy cập từ ngoài qua NodePort của cả 2 Worker
+curl -s http://20.205.36.32:30080/frontend-info.json
+curl -s http://20.205.36.32:30080/api/health
+curl -s http://20.24.211.55:30080/api/health
+```
+
+*Kỳ vọng:* Cả 3 node ở trạng thái `Ready`; `cdb-frontend` (`2/2`) và `cdb-backend` (`2/2`) chia đều mỗi worker 1 Pod; các lệnh HTTP đều trả `200 OK` kèm `"version": "v1"`.
+
+### 6.2. Mở rộng số lượng bản sao (Scale Replicas)
 
 ```bash
 kubectl scale deployment cdb-frontend -n cdb-kanban --replicas=4
+kubectl rollout status deployment/cdb-frontend -n cdb-kanban
 kubectl get pods -n cdb-kanban -l app=cdb-frontend -o wide
+
+# Thu gọn lại trạng thái ban đầu sau khi kiểm tra
 kubectl scale deployment cdb-frontend -n cdb-kanban --replicas=2
 ```
 
-### Rolling Update lên `v2` & Rollback về `v1`
+*Kỳ vọng:* 4/4 Pod đạt `Running` và tự phân bố 2 Pod trên `worker1`, 2 Pod trên `worker2`.
+
+### 6.3. Cập nhật không gián đoạn (`v1 -> v2`) & Rollback (`v2 -> v1`)
 
 ```bash
 # Cập nhật image lên phiên bản v2
@@ -217,17 +268,51 @@ kubectl set image deployment/cdb-frontend frontend=quanq026/cdb-kanban-frontend:
 kubectl rollout status deployment/cdb-backend -n cdb-kanban
 kubectl rollout status deployment/cdb-frontend -n cdb-kanban
 
+# Xác nhận version mới trên endpoint (UI đổi badge sang v2, dữ liệu DB giữ nguyên)
+curl -s http://20.205.36.32:30080/frontend-info.json
+curl -s http://20.205.36.32:30080/api/health
+
 # Kiểm tra lịch sử và khôi phục về v1
 kubectl rollout history deployment/cdb-backend -n cdb-kanban
 kubectl rollout undo deployment/cdb-backend -n cdb-kanban
 kubectl rollout undo deployment/cdb-frontend -n cdb-kanban
+kubectl rollout status deployment/cdb-backend -n cdb-kanban
+kubectl rollout status deployment/cdb-frontend -n cdb-kanban
+curl -s http://20.205.36.32:30080/api/health
 ```
 
-### Kiểm tra Health & Thông tin Pod qua HTTP
+*Kỳ vọng:* Nhờ `maxUnavailable: 0`, `preStop` và `readinessProbe`, quá trình nâng cấp/rollback giữ `200 OK` liên tục và toàn bộ tài khoản/task đã tạo trước đó vẫn hiển thị bình thường.
+
+### 6.4. Mô phỏng sự cố tắt 1 Worker Node & Tự phục hồi
+
+Trước khi tắt node, kiểm tra vị trí Pod `postgres` hiện tại (`kubectl get pods -n cdb-kanban -o wide`). Vì `01-postgres.yaml` dùng `emptyDir`, chọn tắt worker **không chứa** `postgres` để giữ nguyên dữ liệu (ví dụ nếu `postgres` đang ở `worker1` thì tắt `worker2`, hoặc ngược lại).
 
 ```bash
-curl -s http://<worker-ip>:30080/frontend-info.json
-curl -s http://<worker-ip>:30080/api/health
+# Terminal 1 (trên cp): theo dõi Node và Pod thay đổi theo thời gian thực
+kubectl get nodes,pods -n cdb-kanban -o wide -w
+
+# Terminal 2 (trên máy local có Azure CLI): tắt nóng 1 worker (thay worker2/worker1 tương ứng)
+az vm deallocate -g rg-k8s -n worker2
+```
+
+*Kết quả quan sát:*
+1. Với `--node-monitor-grace-period=20s` trên control plane và `tolerationSeconds: 10` trong các manifest, worker bị tắt chuyển `NotReady` sau ~`16–20s` và toàn bộ Pod trên node đó được tạo mới sang worker còn lại sau tổng thời gian ~`28–30s`.
+2. Mở trình duyệt hoặc `curl` vào Public IP của worker đang sống (`http://20.205.36.32:30080` hoặc `http://20.24.211.55:30080`) vẫn đăng nhập và thao tác Kanban bình thường.
+3. *(Lưu ý: Nếu tắt đúng worker đang giữ `postgres`, Pod DB mới khởi tạo lại trên worker sống sau ~30s nhưng database được tạo mới trống từ `ConfigMap/postgres-initdb`).*
+
+Khôi phục lại node sau kiểm thử:
+
+```bash
+az vm start -g rg-k8s -n worker2
+kubectl get nodes -o wide
+```
+
+### 6.5. Menu CLI tương tác (`demo_menu.py`)
+
+Thay vì gõ từng lệnh rời rạc, có thể chạy menu tương tác ngay trên máy Windows/Linux (tự động SSH vào `cp` `52.184.98.155`) để gọi nhanh toàn bộ kiểm tra node, HTTP, scale, rollout `v1 <-> v2`, kết nối nội bộ và tắt/bật VM:
+
+```bash
+python demo_menu.py
 ```
 
 ---
@@ -242,7 +327,7 @@ python -m venv .venv
 # Linux/macOS: ./.venv/bin/pip install -r backend/requirements.txt
 
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-ruff check backend tests
+ruff check backend tests demo_menu.py
 kubectl apply --dry-run=client -f k8s/
 ```
 
