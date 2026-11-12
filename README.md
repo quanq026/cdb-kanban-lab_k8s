@@ -242,6 +242,10 @@ kubectl exec -n cdb-kanban deployment/postgres -- pg_isready -U app_user -d stud
 curl -s http://20.205.36.32:30080/frontend-info.json
 curl -s http://20.205.36.32:30080/api/health
 curl -s http://20.24.211.55:30080/api/health
+
+# 5. Theo dõi log định tuyến & cân bằng tải giữa các Node/Pod theo thời gian thực
+kubectl logs -f -n cdb-kanban -l app=cdb-frontend --since=1m
+kubectl logs -f -n cdb-kanban -l app=cdb-backend --since=1m
 ```
 
 *Kỳ vọng:* Cả 3 node ở trạng thái `Ready`; `cdb-frontend` (`2/2`) và `cdb-backend` (`2/2`) chia đều mỗi worker 1 Pod; các lệnh HTTP đều trả `200 OK` kèm `"version": "v1"`.

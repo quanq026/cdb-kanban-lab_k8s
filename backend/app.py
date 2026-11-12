@@ -21,7 +21,10 @@ MAX_PASSWORD = 200
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 LOCAL_IPS = ("127.0.0.1", "::1")
 APP_VERSION = os.environ.get("APP_VERSION", "v1")
-POD_NAME = socket.gethostname()
+POD_NAME = os.environ.get("POD_NAME") or socket.gethostname()
+NODE_NAME = os.environ.get("NODE_NAME", "local")
+PROBE_PATHS = frozenset(("/livez", "/api/health"))
+SAFE_META_RE = re.compile(r"[^A-Za-z0-9._-]+")
 PUBLIC_PATHS = frozenset((
     "/favicon.ico", "/livez",
     "/api/login", "/api/register", "/api/health",
@@ -83,7 +86,39 @@ app.config.update(
     SESSION_COOKIE_SECURE=_env_bool("COOKIE_SECURE", True),
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
 )
-app.logger.setLevel(logging.INFO)
+class _PodContextFilter(logging.Filter):
+    """Gắn thông tin Node, Pod và Version vào mỗi bản ghi log."""
+
+    def filter(self, record):
+        record.node = NODE_NAME
+        record.pod = POD_NAME
+        record.ver = APP_VERSION
+        return True
+
+
+def configure_logging():
+    """Thiết lập log 1 dòng dễ theo dõi cân bằng tải giữa các Node/Pod."""
+    formatter = logging.Formatter(
+        "[%(asctime)s] [BE node=%(node)s pod=%(pod)s ver=%(ver)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    ctx_filter = _PodContextFilter()
+    app.logger.setLevel(logging.INFO)
+    if not app.logger.handlers:
+        app.logger.addHandler(logging.StreamHandler())
+    app.logger.propagate = False
+    for handler in app.logger.handlers:
+        handler.setFormatter(formatter)
+        handler.addFilter(ctx_filter)
+
+
+def clean_meta(value, fallback=""):
+    """Loại bỏ ký tự lạ khỏi metadata header trước khi ghi log."""
+    cleaned = SAFE_META_RE.sub("", (value or "").strip())
+    return cleaned[:64] or fallback
+
+
+configure_logging()
 
 DUMMY_HASH = generate_password_hash("cdb-kanban-dummy")
 
@@ -273,15 +308,29 @@ def before_request():
 @app.after_request
 def after_request(resp):
     elapsed_ms = (time.perf_counter() - getattr(g, "t0", time.perf_counter())) * 1000
-    app.logger.info(
-        "%s %s %s %.1fms ip=%s uid=%s",
-        request.method,
-        request.path,
-        resp.status_code,
-        elapsed_ms,
-        request.remote_addr,
-        session.get("uid", "-"),
+    ua = request.headers.get("User-Agent", "")
+    is_healthy_probe = (
+        request.path in PROBE_PATHS
+        and ua.startswith("kube-probe/")
+        and resp.status_code < 400
     )
+    if not is_healthy_probe:
+        fe_node = clean_meta(request.headers.get("X-Frontend-Node"))
+        fe_pod = clean_meta(request.headers.get("X-Frontend-Pod"))
+        via = f"FE:{fe_node}/{fe_pod}" if fe_node and fe_pod else (f"FE:{fe_node}" if fe_node else "direct")
+        log_fn = app.logger.warning if resp.status_code >= 500 else app.logger.info
+        log_fn(
+            "%s %s -> %s (%.1fms) uid=%s via=%s client=%s",
+            request.method,
+            request.path,
+            resp.status_code,
+            elapsed_ms,
+            session.get("uid", "-"),
+            via,
+            request.remote_addr,
+        )
+    resp.headers["X-Backend-Node"] = NODE_NAME
+    resp.headers["X-Backend-Pod"] = POD_NAME
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "SAMEORIGIN"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -473,7 +522,7 @@ def delete_task(task_id):
 
 @app.get("/livez")
 def livez():
-    return jsonify(status="alive", version=APP_VERSION, pod=POD_NAME)
+    return jsonify(status="alive", version=APP_VERSION, pod=POD_NAME, node=NODE_NAME)
 
 
 @app.get("/api/health")
@@ -497,6 +546,7 @@ def health():
                 ok=False,
                 version=APP_VERSION,
                 pod=POD_NAME,
+                node=NODE_NAME,
                 error="co so du lieu tam thoi khong san sang",
                 code="db_unavailable",
             ),
@@ -509,12 +559,14 @@ def health():
             ok=True,
             version=APP_VERSION,
             pod=POD_NAME,
+            node=NODE_NAME,
         )
     row.update(
         status="ok",
         ok=True,
         version=APP_VERSION,
         pod=POD_NAME,
+        node=NODE_NAME,
         db_host=CONN_INFO["host"],
         sslmode=CONN_INFO["sslmode"],
     )

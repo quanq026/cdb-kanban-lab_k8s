@@ -81,6 +81,10 @@ class TestK8sManifests(unittest.TestCase):
             text = (K8S_DIR / name).read_text(encoding="utf-8")
             self.assertIn("pod-template-hash", text, f"{name} should scope spread to active ReplicaSet")
             self.assertIn("preStop:", text, f"{name} should drain endpoints with preStop hook")
+            self.assertIn("NODE_NAME", text, f"{name} should pass NODE_NAME via Downward API")
+            self.assertIn("spec.nodeName", text, f"{name} should populate NODE_NAME from spec.nodeName")
+            self.assertIn("POD_NAME", text, f"{name} should pass POD_NAME via Downward API")
+            self.assertIn("metadata.name", text, f"{name} should populate POD_NAME from metadata.name")
 
 
 if __name__ == "__main__":

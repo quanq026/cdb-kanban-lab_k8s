@@ -56,18 +56,33 @@ class TestLayoutAndFrontend(unittest.TestCase):
         self.assertIn("proxy_pass http://backend-svc:8000", conf)
         self.assertIn("location = /healthz", conf)
         self.assertIn("try_files", conf)
+        self.assertIn("log_format fe_web", conf)
+        self.assertIn("log_format fe_api", conf)
+        self.assertIn("upstream_http_x_backend_node", conf)
+        self.assertIn("upstream_http_x_backend_pod", conf)
+        self.assertIn("X-Frontend-Node", conf)
+        self.assertIn("X-Frontend-Pod", conf)
+        self.assertIn("/etc/nginx/pod-meta.inc", conf)
 
     def test_frontend_dockerfile_uses_version_build_arg(self):
         df = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("ARG APP_VERSION=v1", df)
         self.assertIn("ENV APP_VERSION=${APP_VERSION}", df)
         self.assertIn("99-pod-info.sh", df)
+        self.assertIn("/etc/nginx/pod-meta.inc", df)
         self.assertNotIn("latest", df.lower().split("\n")[0])
+
+    def test_backend_dockerfile_avoids_duplicate_gunicorn_access_log(self):
+        df = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("--access-logfile", df)
+        self.assertIn("--error-logfile", df)
 
     def test_frontend_pod_info_script_emits_version_and_pod(self):
         sh = (ROOT / "frontend" / "99-pod-info.sh").read_text(encoding="utf-8")
         self.assertIn("frontend-info.json", sh)
+        self.assertIn("pod-meta.inc", sh)
         self.assertIn("APP_VERSION", sh)
+        self.assertIn("NODE_NAME", sh)
         self.assertIn("HOSTNAME", sh)
 
     def test_frontend_html_and_js_have_version_and_pod_hooks(self):
@@ -150,6 +165,71 @@ class TestBackendApp(unittest.TestCase):
         self.assertEqual(err_data["code"], "db_unavailable")
         self.assertEqual(err_data["version"], "v2")
         self.assertEqual(err_data["pod"], socket.gethostname())
+        self.assertEqual(err_data["node"], "local")
+
+    def test_custom_logging_filters_kube_probe_and_traces_frontend_hop(self):
+        import io
+        import logging
+
+        mod = load_backend_module(
+            {
+                "APP_SECRET_KEY": "unit-test-secret",
+                "DB_HOST": "127.0.0.1",
+                "DB_NAME": "studydb",
+                "DB_USER": "app_user",
+                "DB_PASSWORD": "secret",
+                "DB_SSLMODE": "disable",
+                "COOKIE_SECURE": "false",
+                "APP_VERSION": "v1",
+                "NODE_NAME": "worker1",
+                "POD_NAME": "cdb-backend-test",
+            }
+        )
+        self.addCleanup(lambda: mod.pool.close(timeout=0.5))
+
+        buf = io.StringIO()
+        capture = logging.StreamHandler(buf)
+        base_handler = mod.app.logger.handlers[0]
+        capture.setFormatter(base_handler.formatter)
+        for flt in base_handler.filters:
+            capture.addFilter(flt)
+        mod.app.logger.addHandler(capture)
+        self.addCleanup(lambda: mod.app.logger.removeHandler(capture))
+
+        client = mod.app.test_client()
+        with mock.patch.object(
+            mod,
+            "q_all",
+            return_value=[{"db_user": "app_user", "database": "studydb", "backend_addr": "10.0.0.5"}],
+        ):
+            r_probe = client.get("/api/health", headers={"User-Agent": "kube-probe/1.35"})
+            self.assertEqual(r_probe.status_code, 200)
+            self.assertEqual(buf.getvalue(), "")
+
+            r_curl = client.get(
+                "/api/health",
+                headers={
+                    "User-Agent": "curl/8.5.0",
+                    "X-Frontend-Node": "worker2; bad=1",
+                    "X-Frontend-Pod": "cdb-frontend-abc",
+                },
+            )
+            self.assertEqual(r_curl.status_code, 200)
+            self.assertEqual(r_curl.headers.get("X-Backend-Node"), "worker1")
+            self.assertEqual(r_curl.headers.get("X-Backend-Pod"), "cdb-backend-test")
+            self.assertEqual(r_curl.get_json()["node"], "worker1")
+            self.assertEqual(mod.clean_meta("worker2\nFAKE"), "worker2FAKE")
+
+        with mock.patch.object(mod, "q_all", side_effect=mod.OperationalError("down")):
+            r_fail = client.get("/api/health", headers={"User-Agent": "kube-probe/1.35"})
+            self.assertEqual(r_fail.status_code, 503)
+
+        lines = buf.getvalue().strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("[BE node=worker1 pod=cdb-backend-test ver=v1]", lines[0])
+        self.assertIn("GET /api/health -> 200", lines[0])
+        self.assertIn("via=FE:worker2bad1/cdb-frontend-abc", lines[0])
+        self.assertIn("GET /api/health -> 503", lines[1])
 
 
 if __name__ == "__main__":
