@@ -242,15 +242,47 @@ kubectl exec -n cdb-kanban deployment/postgres -- pg_isready -U app_user -d stud
 curl -s http://20.205.36.32:30080/frontend-info.json
 curl -s http://20.205.36.32:30080/api/health
 curl -s http://20.24.211.55:30080/api/health
-
-# 5. Theo dõi log định tuyến & cân bằng tải giữa các Node/Pod theo thời gian thực
-kubectl logs -f -n cdb-kanban -l app=cdb-frontend --since=1m
-kubectl logs -f -n cdb-kanban -l app=cdb-backend --since=1m
 ```
 
 *Kỳ vọng:* Cả 3 node ở trạng thái `Ready`; `cdb-frontend` (`2/2`) và `cdb-backend` (`2/2`) chia đều mỗi worker 1 Pod; các lệnh HTTP đều trả `200 OK` kèm `"version": "v1"`.
 
-### 6.2. Mở rộng số lượng bản sao (Scale Replicas)
+### 6.2. Xem log ứng dụng & kiểm tra cân bằng tải giữa 2 Worker
+
+**1. Xem log real-time trên `cp` (`52.184.98.155`):** `kubectl logs` tự động gom log của toàn bộ Pod trên cả `worker1` và `worker2` về một màn hình.
+
+```bash
+# Log Frontend Nginx (hiện FE node/pod và Backend node/pod đích ở trường be=...)
+kubectl logs -f -n cdb-kanban -l app=cdb-frontend --since=1m
+
+# Log Backend Flask (đã ẩn nhiễu kube-probe, hiện via=FE:<node>/<pod> -> [BE node=<node>])
+kubectl logs -f -n cdb-kanban -l app=cdb-backend --since=1m
+
+# Log PostgreSQL (khi cần theo dõi trạng thái khởi tạo hoặc truy vấn DB)
+kubectl logs -f -n cdb-kanban -l app=postgres --tail=50
+```
+
+**2. Gửi request kiểm tra cân bằng tải qua NodePort:** Nhờ `externalTrafficPolicy: Cluster`, gọi vào Public IP của `worker1` (`20.205.36.32:30080`) hay `worker2` (`20.24.211.55:30080`) đều tự phân phối kết nối mới sang cả 2 worker:
+
+```bash
+for i in $(seq 1 6); do
+  curl -s http://20.24.211.55:30080/frontend-info.json; echo
+  curl -s http://20.24.211.55:30080/api/health; echo
+done
+```
+
+*(Ghi chú: Trình duyệt giữ kết nối TCP qua HTTP Keep-Alive nên trong một phiên mở trang có thể đi chung 1 Pod Frontend, nhưng các kết nối TCP mới và luồng proxy `/api/*` sang `backend-svc` vẫn chia tải đều giữa hai node.)*
+
+**3. Xem bộ đếm gói `iptables` ở tầng kernel (chạy trực tiếp trên `worker1` hoặc `worker2`):**
+
+```bash
+# Liệt kê tên chain KUBE-SVC-* của các Service trong namespace cdb-kanban
+sudo iptables -t nat -L KUBE-SERVICES -n -v | grep cdb-kanban
+
+# Xem chi tiết rule xác suất 50% và cột pkts/bytes chuyển tới từng Pod endpoint
+sudo iptables -t nat -L -n -v | grep -B 3 -A 1 cdb-kanban
+```
+
+### 6.3. Mở rộng số lượng bản sao (Scale Replicas)
 
 ```bash
 kubectl scale deployment cdb-frontend -n cdb-kanban --replicas=4
@@ -263,7 +295,7 @@ kubectl scale deployment cdb-frontend -n cdb-kanban --replicas=2
 
 *Kỳ vọng:* 4/4 Pod đạt `Running` và tự phân bố 2 Pod trên `worker1`, 2 Pod trên `worker2`.
 
-### 6.3. Cập nhật không gián đoạn (`v1 -> v2`) & Rollback (`v2 -> v1`)
+### 6.4. Cập nhật không gián đoạn (`v1 -> v2`) & Rollback (`v2 -> v1`)
 
 ```bash
 # Cập nhật image lên phiên bản v2
@@ -287,7 +319,7 @@ curl -s http://20.205.36.32:30080/api/health
 
 *Kỳ vọng:* Nhờ `maxUnavailable: 0`, `preStop` và `readinessProbe`, quá trình nâng cấp/rollback giữ `200 OK` liên tục và toàn bộ tài khoản/task đã tạo trước đó vẫn hiển thị bình thường.
 
-### 6.4. Mô phỏng sự cố tắt 1 Worker Node & Tự phục hồi
+### 6.5. Mô phỏng sự cố tắt 1 Worker Node & Tự phục hồi
 
 Trước khi tắt node, kiểm tra vị trí Pod `postgres` hiện tại (`kubectl get pods -n cdb-kanban -o wide`). Vì `01-postgres.yaml` dùng `emptyDir`, chọn tắt worker **không chứa** `postgres` để giữ nguyên dữ liệu (ví dụ nếu `postgres` đang ở `worker1` thì tắt `worker2`, hoặc ngược lại).
 
@@ -311,7 +343,7 @@ az vm start -g rg-k8s -n worker2
 kubectl get nodes -o wide
 ```
 
-### 6.5. Menu CLI tương tác (`demo_menu.py`)
+### 6.6. Menu CLI tương tác (`demo_menu.py`)
 
 Thay vì gõ từng lệnh rời rạc, có thể chạy menu tương tác ngay trên máy Windows/Linux (tự động SSH vào `cp` `52.184.98.155`) để gọi nhanh toàn bộ kiểm tra node, HTTP, scale, rollout `v1 <-> v2`, kết nối nội bộ và tắt/bật VM:
 
