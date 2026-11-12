@@ -77,9 +77,7 @@ cdb-kanban-lab_k8s/
 │   └── Bao-cao-CKA-2026-CDB-Kanban.pdf
 ├── tests/
 │   ├── test_app_and_config.py # Kiểm thử cấu hình backend API, nginx và static hooks
-│   ├── test_demo_menu.py      # Kiểm thử công cụ CLI điều phối lệnh
 │   └── test_k8s_manifests.py  # Kiểm thử ràng buộc YAML K8s (không dùng :latest, HA, probes, tolerations)
-├── demo_menu.py               # Menu CLI Python kiểm tra cụm và thực thi thao tác vận hành
 └── ruff.toml                  # Cấu hình linter Python
 ```
 
@@ -222,7 +220,7 @@ Truy cập ứng dụng trên trình duyệt tại:
 
 ## 6. Kiểm thử vận hành thực tế
 
-Các bước kiểm tra dưới đây thực hiện trực tiếp trên `cp` (`ssh -i ~/.ssh/id_rsa_azure azureuser@52.184.98.155`) hoặc qua công cụ hỗ trợ `demo_menu.py` từ máy trạm.
+Các bước kiểm tra dưới đây thực hiện trực tiếp trên `cp` (`ssh -i ~/.ssh/id_rsa_azure azureuser@52.184.98.155`).
 
 ### 6.1. Xác minh Cluster, phân bố Pod & liên kết Service nội bộ
 
@@ -343,14 +341,6 @@ az vm start -g rg-k8s -n worker2
 kubectl get nodes -o wide
 ```
 
-### 6.6. Menu CLI tương tác (`demo_menu.py`)
-
-Thay vì gõ từng lệnh rời rạc, có thể chạy menu tương tác ngay trên máy Windows/Linux (tự động SSH vào `cp` `52.184.98.155`) để gọi nhanh toàn bộ kiểm tra node, HTTP, scale, rollout `v1 <-> v2`, kết nối nội bộ và tắt/bật VM:
-
-```bash
-python demo_menu.py
-```
-
 ---
 
 ## 7. Kiểm thử tự động
@@ -363,7 +353,7 @@ python -m venv .venv
 # Linux/macOS: ./.venv/bin/pip install -r backend/requirements.txt
 
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-ruff check backend tests demo_menu.py
+ruff check backend tests
 kubectl apply --dry-run=client -f k8s/
 ```
 
